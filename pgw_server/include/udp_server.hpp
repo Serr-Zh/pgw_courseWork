@@ -1,12 +1,13 @@
 #pragma once
 
 #include "config.hpp"
-#include "logger.hpp"
+#include <logger.hpp>
 #include "session_manager.hpp"
 #include "cdr_logger.hpp"
 #include <string>
 #include <vector>
 #include <netinet/in.h>
+#include <atomic>
 
 class UDPServer {
 public:
@@ -20,13 +21,12 @@ public:
     void stop();
 
 private:
-    std::vector<uint8_t> to_bcd(const std::string& imsi) const;
-    bool is_blacklisted(const std::string& imsi) const;
+    void handle_request();
     
-    int sockfd_;
-    sockaddr_in server_addr_;
     const Config& config_;
     SessionManager& session_manager_;
     CDRLogger& cdr_logger_;
-    bool running_;
+    int sockfd_;
+    sockaddr_in server_addr_;
+    std::atomic<bool> running_;
 };

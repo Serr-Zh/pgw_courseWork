@@ -1,7 +1,7 @@
 #pragma once
 
 #include "config.hpp"
-#include "logger.hpp"
+#include <logger.hpp>
 #include <string>
 #include <fstream>
 #include <mutex>

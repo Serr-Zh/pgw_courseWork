@@ -1,42 +1,40 @@
 #pragma once
 
 #include "config.hpp"
-#include "logger.hpp"
+#include <logger.hpp>
+#include "cdr_logger.hpp"
 #include <unordered_map>
 #include <chrono>
 #include <thread>
 #include <mutex>
+#include <vector>
+#include <atomic>
 
 class SessionManager {
 public:
-    explicit SessionManager(const Config& config);
+    SessionManager(const Config& config, CDRLogger& cdr_logger);
     ~SessionManager();
-
-    // Запрещаем копирование
+    
     SessionManager(const SessionManager&) = delete;
     SessionManager& operator=(const SessionManager&) = delete;
-
-    // Создание сессии для IMSI
+    
     bool create_session(const std::string& imsi);
-
-    // Проверка существования сессии
-    bool has_session(const std::string& imsi) const;
-
-    // Остановка менеджера (удаление всех сессий)
+    bool has_session(const std::string& imsi);
+    void delete_session(const std::string& imsi);
+    std::vector<std::string> get_active_sessions();
     void stop();
 
 private:
-    // Структура сессии
+    void cleanup_expired_sessions();
+    
     struct Session {
         std::chrono::system_clock::time_point start_time;
     };
-
-    // Очистка устаревших сессий
-    void cleanup_expired_sessions();
-
-    const Config& config_;                          // Ссылка на конфигурацию
-    std::unordered_map<std::string, Session> sessions_; // Активные сессии
-    mutable std::mutex mutex_;                     // Мьютекс для потокобезопасности
-    std::thread cleanup_thread_;                   // Поток для очистки сессий
-    bool running_;                                 // Флаг работы
+    
+    const Config& config_;
+    CDRLogger& cdr_logger_;
+    std::unordered_map<std::string, Session> sessions_;
+    std::mutex mutex_;
+    std::thread cleanup_thread_;
+    std::atomic<bool> running_;
 };

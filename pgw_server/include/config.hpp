@@ -8,8 +8,7 @@
 class Config {
 public:
     explicit Config(const std::string& config_file);
-
-    // Геттеры для доступа к настройкам
+    
     std::string get_udp_ip() const { return udp_ip_; }
     int get_udp_port() const { return udp_port_; }
     int get_session_timeout_sec() const { return session_timeout_sec_; }
