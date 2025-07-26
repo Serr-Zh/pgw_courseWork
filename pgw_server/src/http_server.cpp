@@ -4,8 +4,8 @@
 #include <vector>
 #include <atomic>
 
-HTTPServer::HTTPServer(const Config& config, SessionManager& session_manager, CDRLogger& cdr_logger, UDPServer& udp_server)
-    : config_(config), session_manager_(session_manager), cdr_logger_(cdr_logger), udp_server_(udp_server), running_(false) {
+HTTPServer::HTTPServer(const Config& config, SessionManager& session_manager, CDRLogger& cdr_logger, UDPServer& udp_server, std::atomic<bool>& running)
+    : config_(config), session_manager_(session_manager), cdr_logger_(cdr_logger), udp_server_(udp_server), running_(running), running_local_(false) {
     server_ = std::make_unique<httplib::Server>();
 
     server_->Get("/check_subscriber", [this](const httplib::Request& req, httplib::Response& res) {
@@ -24,7 +24,7 @@ HTTPServer::~HTTPServer() {
 }
 
 void HTTPServer::run() {
-    running_ = true;
+    running_local_ = true;
     Logger::get()->info("Starting HTTP Server on port: {}", config_.get_http_port());
 
     server_thread_ = std::thread([this]() {
@@ -35,8 +35,8 @@ void HTTPServer::run() {
 }
 
 void HTTPServer::stop() {
-    if (running_) {
-        running_ = false;
+    if (running_local_) {
+        running_local_ = false;
         server_->stop();
 
         // Останавливаем UDP-сервер
@@ -51,6 +51,7 @@ void HTTPServer::stop() {
         }
 
         Logger::get()->info("HTTP Server stopped");
+        Logger::get()->flush();
     }
 }
 
@@ -72,6 +73,12 @@ void HTTPServer::handle_stop(const httplib::Request& req, httplib::Response& res
     res.set_content("Stopping server...", "text/plain");
     Logger::get()->info("Received stop request");
 
-    // Вызываем stop синхронно
-    stop();
+    // Устанавливаем running = false для завершения main
+    running_ = false;
+
+    // Запускаем stop асинхронно, чтобы дать время на отправку ответа
+    std::thread([this]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        stop();
+        }).detach();
 }

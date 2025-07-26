@@ -75,9 +75,6 @@ void UDPServer::run() {
         bool created = session_manager_.create_session(imsi);
         std::string response = created ? "created" : "rejected";
         Logger::get()->info("Sent response: {} for IMSI: {}", response, imsi);
-        if (created) {
-            cdr_logger_.log(imsi, "created");
-        }
         sendto(sockfd_, response.c_str(), response.size(), 0, (struct sockaddr*)&client_addr, addr_len);
     }
 }

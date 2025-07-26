@@ -10,6 +10,7 @@
 #include <chrono>
 #include <fstream>
 #include <set>
+#include <atomic>
 
 class HTTPServerTest : public ::testing::Test {
 protected:
@@ -33,9 +34,10 @@ protected:
         cdr_logger_ = std::make_unique<CDRLogger>(*config_);
         session_manager_ = std::make_unique<SessionManager>(*config_, *cdr_logger_);
         udp_server_ = std::make_unique<UDPServer>(*config_, *session_manager_, *cdr_logger_);
-        http_server_ = std::make_unique<HTTPServer>(*config_, *session_manager_, *cdr_logger_, *udp_server_);
+        http_server_ = std::make_unique<HTTPServer>(*config_, *session_manager_, *cdr_logger_, *udp_server_, running_);
 
         // Запускаем серверы
+        session_thread_ = std::thread([this]() { session_manager_->run(); });
         udp_thread_ = std::thread([this]() { udp_server_->run(); });
         http_thread_ = std::thread([this]() { http_server_->run(); });
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -43,6 +45,9 @@ protected:
 
     void TearDown() override {
         http_server_->stop();
+        if (session_thread_.joinable()) {
+            session_thread_.join();
+        }
         if (udp_thread_.joinable()) {
             udp_thread_.join();
         }
@@ -59,11 +64,13 @@ protected:
         std::remove("test_cdr.log");
     }
 
+    std::atomic<bool> running_{ true };
     std::unique_ptr<Config> config_;
     std::unique_ptr<CDRLogger> cdr_logger_;
     std::unique_ptr<SessionManager> session_manager_;
     std::unique_ptr<UDPServer> udp_server_;
     std::unique_ptr<HTTPServer> http_server_;
+    std::thread session_thread_;
     std::thread udp_thread_;
     std::thread http_thread_;
 };
@@ -93,9 +100,26 @@ TEST_F(HTTPServerTest, StopServer) {
     EXPECT_EQ(res->status, 200);
     EXPECT_EQ(res->body, "Stopping server...");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
     auto res_after = cli.Get("/check_subscriber?imsi=123456789012345");
     EXPECT_TRUE(res_after == nullptr); // Сервер должен быть остановлен
+
+    // Проверяем, что сервер корректно остановился
+    std::ifstream log_file("test.log");
+    std::string line;
+    bool found_stop = false;
+    bool found_session_manager_stop = false;
+    while (std::getline(log_file, line)) {
+        if (line.find("HTTP Server stopped") != std::string::npos) {
+            found_stop = true;
+        }
+        if (line.find("SessionManager stopped") != std::string::npos) {
+            found_session_manager_stop = true;
+        }
+    }
+    EXPECT_TRUE(found_stop) << "HTTP Server stop not logged";
+    EXPECT_TRUE(found_session_manager_stop) << "SessionManager stop not logged";
 }
 
 TEST_F(HTTPServerTest, StopWithActiveSessions) {
@@ -114,7 +138,7 @@ TEST_F(HTTPServerTest, StopWithActiveSessions) {
     EXPECT_EQ(res->status, 200);
     EXPECT_EQ(res->body, "Stopping server...");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
     // Проверяем, что все сессии удалены
     for (const auto& imsi : imsies) {

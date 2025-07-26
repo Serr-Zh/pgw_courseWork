@@ -30,11 +30,12 @@ void SessionManager::stop() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
             for (const auto& session : sessions_) {
-                cdr_logger_.log(session.first, "deleted"); // Логируем удаление при /stop
+                cdr_logger_.log(session.first, "deleted");
             }
             sessions_.clear();
         }
         Logger::get()->info("SessionManager stopped");
+        Logger::get()->flush();
     }
 }
 
