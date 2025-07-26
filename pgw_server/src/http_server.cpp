@@ -2,6 +2,7 @@
 #include <thread>
 #include <chrono>
 #include <vector>
+#include <atomic>
 
 HTTPServer::HTTPServer(const Config& config, SessionManager& session_manager, CDRLogger& cdr_logger, UDPServer& udp_server)
     : config_(config), session_manager_(session_manager), cdr_logger_(cdr_logger), udp_server_(udp_server), running_(false) {
@@ -41,15 +42,6 @@ void HTTPServer::stop() {
         // Останавливаем UDP-сервер
         udp_server_.stop();
 
-        // Плавное завершение: удаляем оставшиеся сессии
-        int rate = config_.get_graceful_shutdown_rate();
-        auto sessions = session_manager_.get_active_sessions();
-        for (const auto& imsi : sessions) {
-            session_manager_.delete_session(imsi); // Логирование уже в SessionManager
-            Logger::get()->info("Session deleted for IMSI: {}", imsi);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000 / rate));
-        }
-
         // Останавливаем SessionManager
         session_manager_.stop();
 
@@ -79,9 +71,7 @@ void HTTPServer::handle_check_subscriber(const httplib::Request& req, httplib::R
 void HTTPServer::handle_stop(const httplib::Request& req, httplib::Response& res) {
     res.set_content("Stopping server...", "text/plain");
     Logger::get()->info("Received stop request");
-    // Вызываем stop асинхронно после отправки ответа
-    std::thread([this]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        stop();
-        }).detach();
+
+    // Вызываем stop синхронно
+    stop();
 }

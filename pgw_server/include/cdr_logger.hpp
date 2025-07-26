@@ -19,6 +19,7 @@ public:
     void log(const std::string& imsi, const std::string& action);
 
 private:
+    const Config& config_;     // Поле для хранения конфигурации
     std::ofstream file_;       // Файл для записи CDR
     std::mutex mutex_;         // Мьютекс для потокобезопасности
 };
