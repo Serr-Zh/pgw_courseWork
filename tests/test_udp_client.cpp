@@ -79,6 +79,8 @@ protected:
 
 TEST_F(UDPClientTest, SendValidIMSI) {
     std::string imsi = "123456789012345";
-    std::string response = udp_client_->send_imsi(imsi);
+    std::string response;
+    bool success = udp_client_->send_imsi(imsi, response);
+    EXPECT_TRUE(success);
     EXPECT_EQ(response, "created");
 }

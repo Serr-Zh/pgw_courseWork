@@ -1,6 +1,5 @@
-#include "client_config.hpp"
 #include "udp_client.hpp"
-#include "logger.hpp"
+#include "client_config.hpp"
 #include <iostream>
 
 int main(int argc, char* argv[]) {
@@ -18,10 +17,16 @@ int main(int argc, char* argv[]) {
 
         Logger::get()->info("Starting PGW Client...");
         UDPClient client(config);
-        std::string response = client.send_imsi(imsi);
-
-        std::cout << "Response: " << response << std::endl;
-
+        std::string response;
+        if (client.send_imsi(imsi, response)) {
+            std::cout << "Response: " << response << std::endl;
+            return 0;
+        }
+        else {
+            std::cerr << "Error: Failed to receive response" << std::endl;
+            Logger::get()->error("Client failed: Failed to receive response for IMSI: {}", imsi);
+            return 1;
+        }
     }
     catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

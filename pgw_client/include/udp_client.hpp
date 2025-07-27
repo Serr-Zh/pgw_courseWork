@@ -13,7 +13,8 @@ public:
     UDPClient(const UDPClient&) = delete;
     UDPClient& operator=(const UDPClient&) = delete;
     
-    std::string send_imsi(const std::string& imsi);
+    // std::string send_imsi(const std::string& imsi);
+    bool send_imsi(const std::string& imsi, std::string& response, int retries = 3, int timeout_ms = 1000);
 
 private:
     int sockfd_;

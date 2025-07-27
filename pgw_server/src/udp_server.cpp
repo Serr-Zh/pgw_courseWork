@@ -22,7 +22,6 @@ void UDPServer::run() {
         return;
     }
 
-    // Устанавливаем сокет в неблокирующий режим
     if (fcntl(sockfd_, F_SETFL, O_NONBLOCK) < 0) {
         Logger::get()->error("Failed to set socket to non-blocking");
         close(sockfd_);
@@ -35,13 +34,18 @@ void UDPServer::run() {
     server_addr.sin_port = htons(config_.get_udp_port());
 
     if (bind(sockfd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        Logger::get()->error("Failed to bind socket");
+        Logger::get()->error("Failed to bind socket: {}", strerror(errno));
         close(sockfd_);
         return;
     }
 
     Logger::get()->info("UDP Server started on {}:{}", config_.get_udp_ip(), config_.get_udp_port());
     running_ = true;
+
+    // Запускаем пул потоков
+    for (size_t i = 0; i < NUM_THREADS; ++i) {
+        workers_.emplace_back(&UDPServer::worker_thread, this);
+    }
 
     char buffer[256];
     struct sockaddr_in client_addr;
@@ -62,28 +66,49 @@ void UDPServer::run() {
 
         buffer[n] = '\0';
         std::string imsi(buffer);
-        Logger::get()->info("Received IMSI: {}", imsi);
-
-        // Проверка формата IMSI: 15 цифр
-        std::regex imsi_regex("^[0-9]{15}$");
-        if (!std::regex_match(imsi, imsi_regex)) {
-            Logger::get()->warn("Invalid IMSI format: {}", imsi);
-            sendto(sockfd_, "rejected", 8, 0, (struct sockaddr*)&client_addr, addr_len);
-            continue;
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            request_queue_.emplace(imsi, client_addr, addr_len);
         }
-
-        bool created = session_manager_.create_session(imsi);
-        std::string response = created ? "created" : "rejected";
-        Logger::get()->info("Sent response: {} for IMSI: {}", response, imsi);
-        sendto(sockfd_, response.c_str(), response.size(), 0, (struct sockaddr*)&client_addr, addr_len);
+        queue_cond_.notify_one();
     }
+}
+
+void UDPServer::worker_thread() {
+    while (running_) {
+        std::tuple<std::string, struct sockaddr_in, socklen_t> request;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cond_.wait(lock, [this] { return !request_queue_.empty() || !running_; });
+            if (!running_ && request_queue_.empty()) return;
+            request = request_queue_.front();
+            request_queue_.pop();
+        }
+        process_request(std::get<0>(request), std::get<1>(request), std::get<2>(request));
+    }
+}
+
+void UDPServer::process_request(const std::string& imsi, const struct sockaddr_in& client_addr, socklen_t addr_len) {
+    Logger::get()->info("Received IMSI: {}", imsi);
+
+    std::regex imsi_regex("^[0-9]{15}$");
+    if (!std::regex_match(imsi, imsi_regex)) {
+        Logger::get()->warn("Invalid IMSI format: {}", imsi);
+        sendto(sockfd_, "rejected", 8, 0, (struct sockaddr*)&client_addr, addr_len);
+        return;
+    }
+
+    bool created = session_manager_.create_session(imsi);
+    std::string response = created ? "created" : "rejected";
+    Logger::get()->info("Sent response: {} for IMSI: {}", response, imsi);
+    sendto(sockfd_, response.c_str(), response.size(), 0, (struct sockaddr*)&client_addr, addr_len);
 }
 
 void UDPServer::stop() {
     if (running_) {
         running_ = false;
+        queue_cond_.notify_all(); // Разблокируем потоки
         if (sockfd_ >= 0) {
-            // Отправляем фиктивный пакет для разблокировки recvfrom
             struct sockaddr_in addr = {};
             addr.sin_family = AF_INET;
             addr.sin_addr.s_addr = inet_addr("127.0.0.1");
@@ -92,6 +117,12 @@ void UDPServer::stop() {
             close(sockfd_);
             sockfd_ = -1;
         }
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        workers_.clear();
         Logger::get()->info("UDP Server stopped");
     }
 }
