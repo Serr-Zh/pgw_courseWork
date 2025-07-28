@@ -2,20 +2,28 @@
 
 #include <nlohmann/json.hpp>
 #include <string>
-#include <filesystem>
 
+// Класс для хранения конфигурации клиента, загружаемой из JSON
 class ClientConfig {
 public:
+    // Конструктор: загружает конфигурацию из файла
     explicit ClientConfig(const std::string& config_file);
-    
-    std::string get_server_ip() const { return server_ip_; }
-    int get_server_port() const { return server_port_; }
-    std::string get_log_file() const { return log_file_; }
-    std::string get_log_level() const { return log_level_; }
+
+    // Геттеры для параметров конфигурации
+    std::string get_server_ip() const { return server_ip; }
+    int get_server_port() const { return server_port; }
+    std::string get_log_file() const { return log_file; }
+    std::string get_log_level() const { return log_level; }
 
 private:
-    std::string server_ip_;
-    int server_port_;
-    std::string log_file_;
-    std::string log_level_;
+    // Значения по умолчанию
+    static constexpr const char* DEFAULT_SERVER_IP = "127.0.0.1";
+    static constexpr int DEFAULT_SERVER_PORT = 9000;
+    static constexpr const char* DEFAULT_LOG_FILE = "client.log";
+    static constexpr const char* DEFAULT_LOG_LEVEL = "INFO";
+
+    std::string server_ip;
+    int server_port;
+    std::string log_file;
+    std::string log_level;
 };

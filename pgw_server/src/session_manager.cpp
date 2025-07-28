@@ -1,75 +1,91 @@
 #include "session_manager.hpp"
 #include <thread>
 #include <chrono>
+#include <algorithm>
+#include <sstream>
 
-SessionManager::SessionManager(const Config& config, CDRLogger& cdr_logger)
-    : config_(config), cdr_logger_(cdr_logger), running_(false) {
-    Logger::get()->info("SessionManager initialized with timeout: {} seconds", config_.get_session_timeout_sec());
+// Конструктор: инициализирует менеджер сессий
+SessionManager::SessionManager(const Config& config, std::shared_ptr<CDRLogger> cdr_logger)
+    : config(config), cdr_logger(cdr_logger), running(false) {
+    std::stringstream ss;
+    ss << "SessionManager initialized with timeout: " << config.get_session_timeout_sec();
+    cdr_logger->get_logger()->info(ss.str());
 }
 
+// Деструктор: останавливает менеджер
 SessionManager::~SessionManager() {
     stop();
 }
 
+// Запускает фоновую очистку сессий
 void SessionManager::run() {
-    running_ = true;
-    cleanup_thread_ = std::thread([this]() {
-        while (running_) {
+    running = true;
+    cleanup_thread = std::thread([this]() {
+        while (running) {
             cleanup_expired_sessions();
-            std::this_thread::sleep_for(std::chrono::milliseconds(config_.get_graceful_shutdown_rate()));
+            std::this_thread::sleep_for(std::chrono::milliseconds(config.get_graceful_shutdown_rate()));
         }
         });
 }
 
+// Останавливает менеджер и очищает все сессии
 void SessionManager::stop() {
-    if (running_) {
-        running_ = false;
-        if (cleanup_thread_.joinable()) {
-            cleanup_thread_.join();
+    if (running) {
+        running = false;
+        if (cleanup_thread.joinable()) {
+            cleanup_thread.join();
         }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            for (const auto& session : sessions_) {
-                cdr_logger_.log(session.first, "deleted");
-            }
-            sessions_.clear();
+        std::lock_guard<std::mutex> lock(mutex);
+        for (const auto& session : sessions) {
+            cdr_logger->log(session.first, "deleted");
+            std::stringstream ss;
+            ss << "Deleted session for IMSI: " << session.first;
+            cdr_logger->get_logger()->info(ss.str());
+            std::this_thread::sleep_for(std::chrono::milliseconds(config.get_graceful_shutdown_rate()));
         }
-        Logger::get()->info("SessionManager stopped");
-        Logger::get()->flush();
+        sessions.clear();
+        cdr_logger->get_logger()->info("SessionManager stopped");
+        cdr_logger->get_logger()->flush();
     }
 }
 
+// Создаёт сессию для IMSI, если не в чёрном списке и не существует
 bool SessionManager::create_session(const std::string& imsi) {
-    if (std::find(config_.get_blacklist().begin(), config_.get_blacklist().end(), imsi) != config_.get_blacklist().end()) {
-        Logger::get()->info("IMSI {} is in blacklist", imsi);
+    if (std::find(config.get_blacklist().begin(), config.get_blacklist().end(), imsi) != config.get_blacklist().end()) {
+        cdr_logger->get_logger()->info("Session creation rejected for IMSI (in blacklist)", imsi);
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (sessions_.find(imsi) != sessions_.end()) {
-        Logger::get()->info("Session already exists for IMSI: {}", imsi);
+    std::lock_guard<std::mutex> lock(mutex);
+    if (sessions.find(imsi) != sessions.end()) {
+        cdr_logger->log(imsi, "rejected: session already exists");
+        cdr_logger->get_logger()->info("Session creation rejected for IMSI (already exists)", imsi);
         return false;
     }
 
-    sessions_[imsi] = Session{ std::chrono::system_clock::now() };
-    Logger::get()->info("Session created for IMSI: {}", imsi);
-    cdr_logger_.log(imsi, "created");
+    sessions[imsi] = Session{ std::chrono::system_clock::now() };
+    cdr_logger->log(imsi, "created");
+    cdr_logger->get_logger()->info("Session created for IMSI", imsi);
     return true;
 }
 
+// Проверяет наличие активной сессии
 bool SessionManager::has_session(const std::string& imsi) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return sessions_.find(imsi) != sessions_.end();
+    std::lock_guard<std::mutex> lock(mutex);
+    return sessions.find(imsi) != sessions.end();
 }
 
+// Удаляет истёкшие сессии
 void SessionManager::cleanup_expired_sessions() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(mutex);
     auto now = std::chrono::system_clock::now();
-    for (auto it = sessions_.begin(); it != sessions_.end();) {
-        if (now - it->second.creation_time > std::chrono::seconds(config_.get_session_timeout_sec())) {
-            Logger::get()->info("Session expired for IMSI: {}", it->first);
-            cdr_logger_.log(it->first, "deleted");
-            it = sessions_.erase(it);
+    for (auto it = sessions.begin(); it != sessions.end();) {
+        if (now - it->second.creation_time > std::chrono::seconds(config.get_session_timeout_sec())) {
+            cdr_logger->log(it->first, "deleted");
+            std::stringstream ss;
+            ss << "Expired session deleted for IMSI: " << it->first;
+            cdr_logger->get_logger()->info(ss.str());
+            it = sessions.erase(it);
         }
         else {
             ++it;

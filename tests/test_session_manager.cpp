@@ -25,9 +25,10 @@ protected:
         config_file.close();
 
         Logger::init("test.log", "INFO");
-        config_ = std::make_unique<Config>("test_config.json");
-        cdr_logger_ = std::make_unique<CDRLogger>(*config_);
-        session_manager_ = std::make_unique<SessionManager>(*config_, *cdr_logger_);
+        config_ = std::make_shared<Config>("test_config.json");
+        logger_ = Logger::get();
+        cdr_logger_ = std::make_shared<CDRLogger>(*config_, logger_);
+        session_manager_ = std::make_shared<SessionManager>(*config_, cdr_logger_);
     }
 
     void TearDown() override {
@@ -35,14 +36,16 @@ protected:
         session_manager_.reset();
         cdr_logger_.reset();
         config_.reset();
+        logger_.reset();
         std::remove("test_config.json");
         std::remove("test.log");
         std::remove("test_cdr.log");
     }
 
-    std::unique_ptr<Config> config_;
-    std::unique_ptr<CDRLogger> cdr_logger_;
-    std::unique_ptr<SessionManager> session_manager_;
+    std::shared_ptr<Config> config_;
+    std::shared_ptr<Logger> logger_;
+    std::shared_ptr<CDRLogger> cdr_logger_;
+    std::shared_ptr<SessionManager> session_manager_;
 };
 
 TEST_F(SessionManagerTest, CreateAndCheckSession) {

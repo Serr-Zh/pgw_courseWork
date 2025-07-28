@@ -1,82 +1,83 @@
 #include "http_server.hpp"
 #include <thread>
 #include <chrono>
-#include <vector>
-#include <atomic>
+#include <sstream>
 
-HTTPServer::HTTPServer(const Config& config, SessionManager& session_manager, CDRLogger& cdr_logger, UDPServer& udp_server, std::atomic<bool>& running)
-    : config_(config), session_manager_(session_manager), cdr_logger_(cdr_logger), udp_server_(udp_server), running_(running), running_local_(false) {
-    server_ = std::make_unique<httplib::Server>();
+// Конструктор: инициализирует HTTP-сервер с зависимостями
+HTTPServer::HTTPServer(const Config& config, std::shared_ptr<ILogger> logger,
+    std::shared_ptr<ISessionManager> session_manager, std::function<void()> stop_callback,
+    std::atomic<bool>& running)
+    : config(config), logger(logger), session_manager(session_manager), stop_callback(stop_callback),
+    running(running), running_local(false) {
+    server = std::make_unique<httplib::Server>();
 
-    server_->Get("/check_subscriber", [this](const httplib::Request& req, httplib::Response& res) {
+    // Регистрируем обработчики HTTP-запросов
+    server->Get("/check_subscriber", [this](const httplib::Request& req, httplib::Response& res) {
         handle_check_subscriber(req, res);
         });
-
-    server_->Get("/stop", [this](const httplib::Request& req, httplib::Response& res) {
+    server->Get("/stop", [this](const httplib::Request& req, httplib::Response& res) {
         handle_stop(req, res);
         });
 
-    Logger::get()->info("HTTP Server initialized on port: {}", config_.get_http_port());
+    logger->info("HTTP Server initialized on port: {}", std::to_string(config.get_http_port()));
 }
 
+// Деструктор: останавливает сервер
 HTTPServer::~HTTPServer() {
     stop();
 }
 
+// Запускает HTTP-сервер в отдельном потоке
 void HTTPServer::run() {
-    running_local_ = true;
-    Logger::get()->info("Starting HTTP Server on port: {}", config_.get_http_port());
+    running_local = true;
+    logger->info("Starting HTTP Server on port: {}", std::to_string(config.get_http_port()));
 
-    server_thread_ = std::thread([this]() {
-        if (!server_->listen("0.0.0.0", config_.get_http_port())) {
-            Logger::get()->error("Failed to start HTTP server on port: {}", config_.get_http_port());
+    server_thread = std::thread([this]() {
+        if (!server->listen("0.0.0.0", config.get_http_port())) {
+            logger->error("Failed to start HTTP server on port: {}", std::to_string(config.get_http_port()));
         }
         });
 }
 
+// Останавливает HTTP-сервер и все зависимости
 void HTTPServer::stop() {
-    if (running_local_) {
-        running_local_ = false;
-        server_->stop();
+    if (running_local) {
+        running_local = false;
+        server->stop();
+        session_manager->stop();
+        stop_callback(); // Вызываем внешнюю функцию остановки (например, для UDP-сервера)
 
-        // Останавливаем UDP-сервер
-        udp_server_.stop();
-
-        // Останавливаем SessionManager
-        session_manager_.stop();
-
-        // Ждём завершения потока сервера
-        if (server_thread_.joinable()) {
-            server_thread_.join();
+        if (server_thread.joinable()) {
+            server_thread.join();
         }
 
-        Logger::get()->info("HTTP Server stopped");
-        Logger::get()->flush();
+        logger->info("HTTP Server stopped");
+        logger->flush(); // Гарантируем запись
     }
 }
 
+// Обрабатывает запрос /check_subscriber
 void HTTPServer::handle_check_subscriber(const httplib::Request& req, httplib::Response& res) {
     auto imsi = req.get_param_value("imsi");
     if (imsi.empty()) {
         res.status = 400;
         res.set_content("Missing IMSI parameter", "text/plain");
-        Logger::get()->warn("Check subscriber request failed: missing IMSI");
+        logger->warn("Check subscriber request failed: missing IMSI");
         return;
     }
 
-    bool has_session = session_manager_.has_session(imsi);
-    res.set_content(has_session ? "active" : "not active", "text/plain");
-    Logger::get()->info("Check subscriber request for IMSI: {}, result: {}", imsi, has_session ? "active" : "not active");
+    bool has_session = session_manager->has_session(imsi);
+    std::string result = has_session ? "active" : "not active";
+    res.set_content(result, "text/plain");
+    logger->info("Check subscriber request", "IMSI: " + imsi + ", result: " + result); // Конкатенация
 }
 
+// Обрабатывает запрос /stop
 void HTTPServer::handle_stop(const httplib::Request& req, httplib::Response& res) {
     res.set_content("Stopping server...", "text/plain");
-    Logger::get()->info("Received stop request");
+    logger->info("Received stop request");
 
-    // Устанавливаем running = false для завершения main
-    running_ = false;
-
-    // Запускаем stop асинхронно, чтобы дать время на отправку ответа
+    running = false;
     std::thread([this]() {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         stop();

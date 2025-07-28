@@ -11,6 +11,7 @@
 #include <fstream>
 #include <set>
 #include <atomic>
+#include <iostream>
 
 class HTTPServerTest : public ::testing::Test {
 protected:
@@ -30,11 +31,12 @@ protected:
         config_file.close();
 
         Logger::init("test.log", "INFO");
-        config_ = std::make_unique<Config>("test_config.json");
-        cdr_logger_ = std::make_unique<CDRLogger>(*config_);
-        session_manager_ = std::make_unique<SessionManager>(*config_, *cdr_logger_);
-        udp_server_ = std::make_unique<UDPServer>(*config_, *session_manager_, *cdr_logger_);
-        http_server_ = std::make_unique<HTTPServer>(*config_, *session_manager_, *cdr_logger_, *udp_server_, running_);
+        config_ = std::make_shared<Config>("test_config.json");
+        logger_ = Logger::get();
+        cdr_logger_ = std::make_shared<CDRLogger>(*config_, logger_);
+        session_manager_ = std::make_shared<SessionManager>(*config_, cdr_logger_);
+        udp_server_ = std::make_shared<UDPServer>(*config_, session_manager_, cdr_logger_);
+        http_server_ = std::make_shared<HTTPServer>(*config_, logger_, session_manager_, [this]() { udp_server_->stop(); }, running_);
 
         // Запускаем серверы
         session_thread_ = std::thread([this]() { session_manager_->run(); });
@@ -45,6 +47,7 @@ protected:
 
     void TearDown() override {
         http_server_->stop();
+        std::this_thread::sleep_for(std::chrono::milliseconds(2000)); // Увеличиваем задержку
         if (session_thread_.joinable()) {
             session_thread_.join();
         }
@@ -59,17 +62,19 @@ protected:
         session_manager_.reset();
         cdr_logger_.reset();
         config_.reset();
+        logger_.reset();
         std::remove("test_config.json");
-        std::remove("test.log");
         std::remove("test_cdr.log");
+        // Не удаляем test.log сразу, чтобы проверить его содержимое
     }
 
     std::atomic<bool> running_{ true };
-    std::unique_ptr<Config> config_;
-    std::unique_ptr<CDRLogger> cdr_logger_;
-    std::unique_ptr<SessionManager> session_manager_;
-    std::unique_ptr<UDPServer> udp_server_;
-    std::unique_ptr<HTTPServer> http_server_;
+    std::shared_ptr<Config> config_;
+    std::shared_ptr<Logger> logger_;
+    std::shared_ptr<CDRLogger> cdr_logger_;
+    std::shared_ptr<SessionManager> session_manager_;
+    std::shared_ptr<UDPServer> udp_server_;
+    std::shared_ptr<HTTPServer> http_server_;
     std::thread session_thread_;
     std::thread udp_thread_;
     std::thread http_thread_;
@@ -100,14 +105,23 @@ TEST_F(HTTPServerTest, StopServer) {
     EXPECT_EQ(res->status, 200);
     EXPECT_EQ(res->body, "Stopping server...");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000)); // Увеличиваем задержку
 
     auto res_after = cli.Get("/check_subscriber?imsi=123456789012345");
     EXPECT_TRUE(res_after == nullptr); // Сервер должен быть остановлен
 
-    // Проверяем, что сервер корректно остановился
+    // Проверяем содержимое test.log
     std::ifstream log_file("test.log");
+    std::string log_content;
     std::string line;
+    while (std::getline(log_file, line)) {
+        log_content += line + "\n";
+    }
+    log_file.close();
+    std::cout << "test.log content:\n" << log_content << std::endl;
+
+    // Проверяем, что сервер корректно остановился
+    log_file.open("test.log");
     bool found_stop = false;
     bool found_session_manager_stop = false;
     while (std::getline(log_file, line)) {
@@ -120,6 +134,9 @@ TEST_F(HTTPServerTest, StopServer) {
     }
     EXPECT_TRUE(found_stop) << "HTTP Server stop not logged";
     EXPECT_TRUE(found_session_manager_stop) << "SessionManager stop not logged";
+
+    // Удаляем test.log после проверки
+    std::remove("test.log");
 }
 
 TEST_F(HTTPServerTest, StopWithActiveSessions) {
@@ -138,7 +155,7 @@ TEST_F(HTTPServerTest, StopWithActiveSessions) {
     EXPECT_EQ(res->status, 200);
     EXPECT_EQ(res->body, "Stopping server...");
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(2000)); // Увеличиваем задержку
 
     // Проверяем, что все сессии удалены
     for (const auto& imsi : imsies) {

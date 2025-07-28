@@ -6,7 +6,6 @@
 class ConfigTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Создаём временный конфигурационный файл
         std::ofstream config_file("test_config.json");
         config_file << R"({
             "udp_ip": "127.0.0.1",

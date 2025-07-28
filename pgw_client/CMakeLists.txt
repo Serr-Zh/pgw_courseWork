@@ -8,6 +8,8 @@ add_executable(pgw_client
 target_include_directories(pgw_client PRIVATE 
   include 
   ../common/include
+  ../pgw_server/include
+
 )
 
 target_link_libraries(pgw_client PRIVATE 

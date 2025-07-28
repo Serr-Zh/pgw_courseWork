@@ -6,123 +6,159 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <regex>
+#include <sstream>
 
-UDPServer::UDPServer(const Config& config, SessionManager& session_manager, CDRLogger& cdr_logger)
-    : config_(config), session_manager_(session_manager), cdr_logger_(cdr_logger), sockfd_(-1), running_(false) {
+// Конструктор Socket: создаёт UDP-сокет
+Socket::Socket() : fd(socket(AF_INET, SOCK_DGRAM, 0)) {
+    if (fd < 0) {
+        throw std::runtime_error("Failed to create socket: " + std::string(strerror(errno)));
+    }
+    // Устанавливаем SO_REUSEADDR
+    int opt = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        throw std::runtime_error("Failed to set SO_REUSEADDR: " + std::string(strerror(errno)));
+    }
 }
 
+// Деструктор Socket: закрывает сокет
+Socket::~Socket() {
+    if (fd >= 0) {
+        close(fd);
+    }
+}
+
+// Устанавливает сокет в неблокирующий режим
+void Socket::set_non_blocking() {
+    if (fcntl(fd, F_SETFL, O_NONBLOCK) < 0) {
+        throw std::runtime_error("Failed to set socket to non-blocking: " + std::string(strerror(errno)));
+    }
+}
+
+// Привязывает сокет к IP и порту
+void Socket::bind(const std::string& ip, int port) {
+    struct sockaddr_in server_addr = {};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = inet_addr(ip.c_str());
+    server_addr.sin_port = htons(port);
+
+    if (::bind(fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        throw std::runtime_error("Failed to bind socket: " + std::string(strerror(errno)));
+    }
+}
+
+// Конструктор: инициализирует UDP-сервер
+UDPServer::UDPServer(const Config& config, std::shared_ptr<ISessionManager> session_manager, std::shared_ptr<CDRLogger> cdr_logger)
+    : config(config), session_manager(session_manager), cdr_logger(cdr_logger), running(false) {
+    std::stringstream ss;
+    ss << "Initializing UDP Server on " << config.get_udp_ip() << ":" << config.get_udp_port();
+    cdr_logger->get_logger()->info(ss.str());
+}
+
+// Деструктор: останавливает сервер
 UDPServer::~UDPServer() {
     stop();
 }
 
+// Декодирует BCD-кодировку IMSI
+std::string UDPServer::decode_bcd(const char* buffer, ssize_t length) {
+    std::string imsi;
+    for (ssize_t i = 0; i < length; ++i) {
+        char high = (buffer[i] >> 4) & 0xF;
+        char low = buffer[i] & 0xF;
+        if (high != 0xF) imsi.push_back(high + '0');
+        if (low != 0xF) imsi.push_back(low + '0');
+    }
+    cdr_logger->get_logger()->info("Decoded IMSI", imsi);
+    return imsi;
+}
+
+// Запускает сервер и пул потоков
 void UDPServer::run() {
-    sockfd_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (sockfd_ < 0) {
-        Logger::get()->error("Failed to create socket");
-        return;
-    }
+    socket.set_non_blocking();
+    socket.bind(config.get_udp_ip(), config.get_udp_port());
+    std::stringstream ss;
+    ss << "UDP Server started on " << config.get_udp_ip() << ":" << config.get_udp_port();
+    cdr_logger->get_logger()->info(ss.str());
+    running = true;
 
-    if (fcntl(sockfd_, F_SETFL, O_NONBLOCK) < 0) {
-        Logger::get()->error("Failed to set socket to non-blocking");
-        close(sockfd_);
-        return;
-    }
-
-    struct sockaddr_in server_addr = {};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = inet_addr(config_.get_udp_ip().c_str());
-    server_addr.sin_port = htons(config_.get_udp_port());
-
-    if (bind(sockfd_, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        Logger::get()->error("Failed to bind socket: {}", strerror(errno));
-        close(sockfd_);
-        return;
-    }
-
-    Logger::get()->info("UDP Server started on {}:{}", config_.get_udp_ip(), config_.get_udp_port());
-    running_ = true;
-
-    // Запускаем пул потоков
+    // Запускаем пул рабочих потоков
     for (size_t i = 0; i < NUM_THREADS; ++i) {
-        workers_.emplace_back(&UDPServer::worker_thread, this);
+        workers.emplace_back(&UDPServer::worker_thread, this);
     }
 
-    char buffer[256];
+    char buffer[BUFFER_SIZE];
     struct sockaddr_in client_addr;
     socklen_t addr_len = sizeof(client_addr);
 
-    while (running_) {
-        ssize_t n = recvfrom(sockfd_, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&client_addr, &addr_len);
+    // Основной цикл приёма UDP-запросов
+    while (running) {
+        ssize_t n = recvfrom(socket.get_fd(), buffer, BUFFER_SIZE - 1, 0, (struct sockaddr*)&client_addr, &addr_len);
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 continue;
             }
-            if (running_) {
-                Logger::get()->error("Failed to receive data: {}", strerror(errno));
+            if (running) {
+                cdr_logger->get_logger()->error("Failed to receive data", strerror(errno));
             }
             continue;
         }
 
-        buffer[n] = '\0';
-        std::string imsi(buffer);
+        buffer[n] = '\0'; // Завершаем строку
+        std::string imsi = decode_bcd(buffer, n);
         {
-            std::lock_guard<std::mutex> lock(queue_mutex_);
-            request_queue_.emplace(imsi, client_addr, addr_len);
+            std::lock_guard<std::mutex> lock(queue_mutex);
+            request_queue.emplace(imsi, client_addr, addr_len);
+            cdr_logger->get_logger()->info("Enqueued IMSI", imsi);
         }
-        queue_cond_.notify_one();
+        queue_cond.notify_one();
     }
 }
 
+// Обрабатывает запросы из очереди
 void UDPServer::worker_thread() {
-    while (running_) {
+    while (running) {
         std::tuple<std::string, struct sockaddr_in, socklen_t> request;
         {
-            std::unique_lock<std::mutex> lock(queue_mutex_);
-            queue_cond_.wait(lock, [this] { return !request_queue_.empty() || !running_; });
-            if (!running_ && request_queue_.empty()) return;
-            request = request_queue_.front();
-            request_queue_.pop();
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            queue_cond.wait(lock, [this] { return !request_queue.empty() || !running; });
+            if (!running && request_queue.empty()) return;
+            request = request_queue.front();
+            request_queue.pop();
         }
         process_request(std::get<0>(request), std::get<1>(request), std::get<2>(request));
     }
 }
 
+// Обрабатывает запрос IMSI
 void UDPServer::process_request(const std::string& imsi, const struct sockaddr_in& client_addr, socklen_t addr_len) {
-    Logger::get()->info("Received IMSI: {}", imsi);
-
     std::regex imsi_regex("^[0-9]{15}$");
     if (!std::regex_match(imsi, imsi_regex)) {
-        Logger::get()->warn("Invalid IMSI format: {}", imsi);
-        sendto(sockfd_, "rejected", 8, 0, (struct sockaddr*)&client_addr, addr_len);
+        cdr_logger->get_logger()->info("Invalid IMSI format", imsi);
+        sendto(socket.get_fd(), "rejected", strlen("rejected"), 0, (struct sockaddr*)&client_addr, addr_len);
         return;
     }
 
-    bool created = session_manager_.create_session(imsi);
+    bool created = session_manager->create_session(imsi);
     std::string response = created ? "created" : "rejected";
-    Logger::get()->info("Sent response: {} for IMSI: {}", response, imsi);
-    sendto(sockfd_, response.c_str(), response.size(), 0, (struct sockaddr*)&client_addr, addr_len);
+    std::stringstream ss;
+    ss << "Processed IMSI: " << imsi << ", response: " << response;
+    cdr_logger->get_logger()->info(ss.str());
+    sendto(socket.get_fd(), response.c_str(), response.size(), 0, (struct sockaddr*)&client_addr, addr_len);
 }
 
+// Останавливает сервер и потоки
 void UDPServer::stop() {
-    if (running_) {
-        running_ = false;
-        queue_cond_.notify_all(); // Разблокируем потоки
-        if (sockfd_ >= 0) {
-            struct sockaddr_in addr = {};
-            addr.sin_family = AF_INET;
-            addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-            addr.sin_port = htons(config_.get_udp_port());
-            sendto(sockfd_, "stop", 4, 0, (struct sockaddr*)&addr, sizeof(addr));
-            close(sockfd_);
-            sockfd_ = -1;
-        }
-        for (auto& worker : workers_) {
+    if (running) {
+        running = false;
+        queue_cond.notify_all();
+        for (auto& worker : workers) {
             if (worker.joinable()) {
                 worker.join();
             }
         }
-        workers_.clear();
-        Logger::get()->info("UDP Server stopped");
+        workers.clear();
+        cdr_logger->get_logger()->info("UDP Server stopped");
+        cdr_logger->get_logger()->flush();
     }
 }

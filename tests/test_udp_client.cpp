@@ -38,12 +38,13 @@ protected:
         client_config_file.close();
 
         Logger::init("test.log", "INFO");
-        server_config_ = std::make_unique<Config>("test_server_config.json");
-        cdr_logger_ = std::make_unique<CDRLogger>(*server_config_);
-        session_manager_ = std::make_unique<SessionManager>(*server_config_, *cdr_logger_);
-        udp_server_ = std::make_unique<UDPServer>(*server_config_, *session_manager_, *cdr_logger_);
-        client_config_ = std::make_unique<ClientConfig>("test_client_config.json");
-        udp_client_ = std::make_unique<UDPClient>(*client_config_);
+        logger_ = Logger::get();
+        server_config_ = std::make_shared<Config>("test_server_config.json");
+        cdr_logger_ = std::make_shared<CDRLogger>(*server_config_, logger_);
+        session_manager_ = std::make_shared<SessionManager>(*server_config_, cdr_logger_);
+        udp_server_ = std::make_shared<UDPServer>(*server_config_, session_manager_, cdr_logger_);
+        client_config_ = std::make_shared<ClientConfig>("test_client_config.json");
+        udp_client_ = std::make_shared<UDPClient>(*client_config_, logger_);
 
         // Запускаем сервер
         server_thread_ = std::thread([this]() { udp_server_->run(); });
@@ -61,6 +62,7 @@ protected:
         session_manager_.reset();
         cdr_logger_.reset();
         server_config_.reset();
+        logger_.reset();
         std::remove("test_server_config.json");
         std::remove("test_client_config.json");
         std::remove("test.log");
@@ -68,12 +70,13 @@ protected:
         std::remove("test_cdr.log");
     }
 
-    std::unique_ptr<Config> server_config_;
-    std::unique_ptr<CDRLogger> cdr_logger_;
-    std::unique_ptr<SessionManager> session_manager_;
-    std::unique_ptr<UDPServer> udp_server_;
-    std::unique_ptr<ClientConfig> client_config_;
-    std::unique_ptr<UDPClient> udp_client_;
+    std::shared_ptr<Config> server_config_;
+    std::shared_ptr<Logger> logger_;
+    std::shared_ptr<CDRLogger> cdr_logger_;
+    std::shared_ptr<SessionManager> session_manager_;
+    std::shared_ptr<UDPServer> udp_server_;
+    std::shared_ptr<ClientConfig> client_config_;
+    std::shared_ptr<UDPClient> udp_client_;
     std::thread server_thread_;
 };
 
